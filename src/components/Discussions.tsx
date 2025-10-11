@@ -7,8 +7,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { MessageSquare, Plus, User } from "lucide-react";
+import { MessageSquare, Plus, User, MessageCircle, Send } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface Discussion {
   id: string;
@@ -22,27 +23,50 @@ interface Discussion {
   };
 }
 
+interface Reply {
+  id: string;
+  content: string;
+  created_at: string;
+  profiles: {
+    username: string;
+    avatar_url: string | null;
+  };
+}
+
 const Discussions = () => {
   const [discussions, setDiscussions] = useState<Discussion[]>([]);
+  const [replies, setReplies] = useState<Record<string, Reply[]>>({});
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [category, setCategory] = useState("general");
+  const [replyContent, setReplyContent] = useState<Record<string, string>>({});
+  const [openDiscussions, setOpenDiscussions] = useState<Record<string, boolean>>({});
   const { toast } = useToast();
 
   useEffect(() => {
     fetchDiscussions();
 
-    const channel = supabase
+    const discussionsChannel = supabase
       .channel("discussions-changes")
       .on("postgres_changes", { event: "*", schema: "public", table: "discussions" }, () => {
         fetchDiscussions();
       })
       .subscribe();
 
+    const repliesChannel = supabase
+      .channel("replies-changes")
+      .on("postgres_changes", { event: "*", schema: "public", table: "discussion_replies" }, (payload: any) => {
+        if (payload.eventType === "INSERT") {
+          fetchReplies(payload.new.discussion_id);
+        }
+      })
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(discussionsChannel);
+      supabase.removeChannel(repliesChannel);
     };
   }, []);
 
@@ -55,6 +79,11 @@ const Discussions = () => {
 
       if (error) throw error;
       setDiscussions(data || []);
+      
+      // Fetch replies for all discussions
+      if (data) {
+        data.forEach((discussion) => fetchReplies(discussion.id));
+      }
     } catch (error: any) {
       toast({
         title: "Error loading discussions",
@@ -63,6 +92,53 @@ const Discussions = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchReplies = async (discussionId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from("discussion_replies")
+        .select("*, profiles(username, avatar_url)")
+        .eq("discussion_id", discussionId)
+        .order("created_at", { ascending: true });
+
+      if (error) throw error;
+      setReplies((prev) => ({ ...prev, [discussionId]: data || [] }));
+    } catch (error: any) {
+      console.error("Error loading replies:", error);
+    }
+  };
+
+  const handleReply = async (discussionId: string) => {
+    const content = replyContent[discussionId]?.trim();
+    if (!content) return;
+
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) throw new Error("Not authenticated");
+
+      const { error } = await supabase.from("discussion_replies").insert({
+        discussion_id: discussionId,
+        user_id: user.id,
+        content,
+      });
+
+      if (error) throw error;
+
+      setReplyContent((prev) => ({ ...prev, [discussionId]: "" }));
+      fetchReplies(discussionId);
+      
+      toast({
+        title: "Reply posted",
+        description: "Your reply has been added.",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Error posting reply",
+        description: error.message,
+        variant: "destructive",
+      });
     }
   };
 
@@ -195,10 +271,71 @@ const Discussions = () => {
                     </span>
                   </div>
                   <p className="text-sm text-muted-foreground mb-2">by {discussion.profiles.username}</p>
-                  <p className="text-foreground">{discussion.content}</p>
-                  <p className="text-xs text-muted-foreground mt-3">
+                  <p className="text-foreground mb-3">{discussion.content}</p>
+                  <p className="text-xs text-muted-foreground">
                     {new Date(discussion.created_at).toLocaleDateString()}
                   </p>
+
+                  <Collapsible
+                    open={openDiscussions[discussion.id]}
+                    onOpenChange={(open) => setOpenDiscussions((prev) => ({ ...prev, [discussion.id]: open }))}
+                    className="mt-4"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button variant="ghost" size="sm" className="gap-2">
+                        <MessageCircle className="h-4 w-4" />
+                        {replies[discussion.id]?.length || 0} Replies
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="mt-4 space-y-4">
+                      {replies[discussion.id]?.map((reply) => (
+                        <div key={reply.id} className="flex gap-3 pl-4 border-l-2 border-primary/20">
+                          <div className="flex-shrink-0">
+                            {reply.profiles.avatar_url ? (
+                              <img
+                                src={reply.profiles.avatar_url}
+                                alt={reply.profiles.username}
+                                className="h-8 w-8 rounded-full"
+                              />
+                            ) : (
+                              <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center">
+                                <User className="h-4 w-4 text-muted-foreground" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <p className="text-sm font-medium">{reply.profiles.username}</p>
+                            <p className="text-sm text-foreground mt-1">{reply.content}</p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              {new Date(reply.created_at).toLocaleDateString()}
+                            </p>
+                          </div>
+                        </div>
+                      ))}
+                      
+                      <div className="flex gap-2 pl-4">
+                        <Input
+                          placeholder="Write a reply..."
+                          value={replyContent[discussion.id] || ""}
+                          onChange={(e) => setReplyContent((prev) => ({ ...prev, [discussion.id]: e.target.value }))}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              handleReply(discussion.id);
+                            }
+                          }}
+                          className="bg-secondary border-border"
+                        />
+                        <Button
+                          size="icon"
+                          onClick={() => handleReply(discussion.id)}
+                          className="bg-primary hover:bg-primary/90"
+                        >
+                          <Send className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </CollapsibleContent>
+                  </Collapsible>
                 </div>
               </div>
             </Card>

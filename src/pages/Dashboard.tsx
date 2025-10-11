@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Session } from "@supabase/supabase-js";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { LogOut, Users, Target, Trophy, Calendar } from "lucide-react";
+import { LogOut, Users, Target, Trophy, Calendar, UserCircle } from "lucide-react";
 import Discussions from "@/components/Discussions";
 import Achievements from "@/components/Achievements";
 import Goals from "@/components/Goals";
@@ -59,14 +59,24 @@ const Dashboard = () => {
           <h1 className="text-2xl font-bold bg-gradient-gold bg-clip-text text-transparent">
             The Top 1% Club
           </h1>
-          <Button
-            variant="outline"
-            onClick={handleLogout}
-            className="border-primary text-foreground hover:bg-primary/10"
-          >
-            <LogOut className="mr-2 h-4 w-4" />
-            Logout
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => navigate("/profile")}
+              className="border-primary text-foreground hover:bg-primary/10"
+            >
+              <UserCircle className="mr-2 h-4 w-4" />
+              Profile
+            </Button>
+            <Button
+              variant="outline"
+              onClick={handleLogout}
+              className="border-primary text-foreground hover:bg-primary/10"
+            >
+              <LogOut className="mr-2 h-4 w-4" />
+              Logout
+            </Button>
+          </div>
         </div>
       </header>
 
