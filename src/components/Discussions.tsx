@@ -7,15 +7,20 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { MessageSquare, Plus, User, MessageCircle, Send } from "lucide-react";
+import { MessageSquare, Plus, User, MessageCircle, Send, ArrowUp, Pin, Eye, TrendingUp } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { motion } from "framer-motion";
 
 interface Discussion {
   id: string;
   title: string;
   content: string;
   category: string;
+  upvotes: number | null;
+  views_count: number | null;
+  is_pinned: boolean | null;
   created_at: string;
   profiles: {
     username: string;
@@ -33,9 +38,19 @@ interface Reply {
   };
 }
 
+const CATEGORIES = [
+  { value: "general", label: "General" },
+  { value: "business", label: "Business" },
+  { value: "mindset", label: "Mindset" },
+  { value: "productivity", label: "Productivity" },
+  { value: "networking", label: "Networking" },
+  { value: "finance", label: "Finance" },
+];
+
 const Discussions = () => {
   const [discussions, setDiscussions] = useState<Discussion[]>([]);
   const [replies, setReplies] = useState<Record<string, Reply[]>>({});
+  const [upvotedDiscussions, setUpvotedDiscussions] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
@@ -43,10 +58,13 @@ const Discussions = () => {
   const [category, setCategory] = useState("general");
   const [replyContent, setReplyContent] = useState<Record<string, string>>({});
   const [openDiscussions, setOpenDiscussions] = useState<Record<string, boolean>>({});
+  const [filter, setFilter] = useState<"latest" | "trending" | "top">("latest");
+  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const { toast } = useToast();
 
   useEffect(() => {
     fetchDiscussions();
+    fetchUserUpvotes();
 
     const discussionsChannel = supabase
       .channel("discussions-changes")
@@ -72,15 +90,24 @@ const Discussions = () => {
 
   const fetchDiscussions = async () => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from("discussions")
-        .select("*, profiles(username, avatar_url)")
-        .order("created_at", { ascending: false });
+        .select("*, profiles(username, avatar_url)");
+
+      if (filter === "top") {
+        query = query.order("upvotes", { ascending: false, nullsFirst: false });
+      } else if (filter === "trending") {
+        query = query.order("views_count", { ascending: false, nullsFirst: false });
+      } else {
+        query = query.order("is_pinned", { ascending: false, nullsFirst: false })
+          .order("created_at", { ascending: false });
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       setDiscussions(data || []);
-      
-      // Fetch replies for all discussions
+
       if (data) {
         data.forEach((discussion) => fetchReplies(discussion.id));
       }
@@ -92,6 +119,23 @@ const Discussions = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchUserUpvotes = async () => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+
+      const { data, error } = await supabase
+        .from("discussion_upvotes")
+        .select("discussion_id")
+        .eq("user_id", user.id);
+
+      if (error) throw error;
+      setUpvotedDiscussions(new Set(data?.map((upvote) => upvote.discussion_id) || []));
+    } catch (error) {
+      console.error("Error fetching upvotes:", error);
     }
   };
 
@@ -107,6 +151,58 @@ const Discussions = () => {
       setReplies((prev) => ({ ...prev, [discussionId]: data || [] }));
     } catch (error: any) {
       console.error("Error loading replies:", error);
+    }
+  };
+
+  const handleUpvote = async (discussionId: string) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        toast({
+          title: "Please log in",
+          description: "You need to be logged in to upvote.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      const isUpvoted = upvotedDiscussions.has(discussionId);
+      const discussion = discussions.find((d) => d.id === discussionId);
+
+      if (isUpvoted) {
+        const { error } = await supabase
+          .from("discussion_upvotes")
+          .delete()
+          .eq("discussion_id", discussionId)
+          .eq("user_id", user.id);
+
+        if (error) throw error;
+
+        await supabase
+          .from("discussions")
+          .update({ upvotes: (discussion?.upvotes || 1) - 1 })
+          .eq("id", discussionId);
+      } else {
+        const { error } = await supabase
+          .from("discussion_upvotes")
+          .insert({ discussion_id: discussionId, user_id: user.id });
+
+        if (error) throw error;
+
+        await supabase
+          .from("discussions")
+          .update({ upvotes: (discussion?.upvotes || 0) + 1 })
+          .eq("id", discussionId);
+      }
+
+      fetchDiscussions();
+      fetchUserUpvotes();
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
     }
   };
 
@@ -128,7 +224,7 @@ const Discussions = () => {
 
       setReplyContent((prev) => ({ ...prev, [discussionId]: "" }));
       fetchReplies(discussionId);
-      
+
       toast({
         title: "Reply posted",
         description: "Your reply has been added.",
@@ -176,13 +272,18 @@ const Discussions = () => {
     }
   };
 
+  const filteredDiscussions = discussions.filter((discussion) => {
+    if (categoryFilter === "all") return true;
+    return discussion.category === categoryFilter;
+  });
+
   if (loading) {
     return <div className="text-center text-muted-foreground">Loading discussions...</div>;
   }
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <h2 className="text-2xl font-bold">Discussions</h2>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
@@ -213,11 +314,11 @@ const Discussions = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="general">General</SelectItem>
-                    <SelectItem value="business">Business</SelectItem>
-                    <SelectItem value="mindset">Mindset</SelectItem>
-                    <SelectItem value="productivity">Productivity</SelectItem>
-                    <SelectItem value="networking">Networking</SelectItem>
+                    {CATEGORIES.map((cat) => (
+                      <SelectItem key={cat.value} value={cat.value}>
+                        {cat.label}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
@@ -240,105 +341,165 @@ const Discussions = () => {
         </Dialog>
       </div>
 
+      <div className="flex flex-col sm:flex-row gap-4">
+        <Tabs value={filter} onValueChange={(v) => setFilter(v as any)} className="w-full sm:w-auto">
+          <TabsList className="bg-card">
+            <TabsTrigger value="latest">Latest</TabsTrigger>
+            <TabsTrigger value="trending">
+              <TrendingUp className="h-4 w-4 mr-1" />
+              Trending
+            </TabsTrigger>
+            <TabsTrigger value="top">Top</TabsTrigger>
+          </TabsList>
+        </Tabs>
+
+        <Select value={categoryFilter} onValueChange={setCategoryFilter}>
+          <SelectTrigger className="w-full sm:w-40 bg-card border-border">
+            <SelectValue placeholder="Category" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Categories</SelectItem>
+            {CATEGORIES.map((cat) => (
+              <SelectItem key={cat.value} value={cat.value}>
+                {cat.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
       <div className="grid gap-4">
-        {discussions.length === 0 ? (
+        {filteredDiscussions.length === 0 ? (
           <Card className="p-8 text-center bg-card border-border">
             <MessageSquare className="mx-auto h-12 w-12 text-muted-foreground mb-4" />
             <p className="text-muted-foreground">No discussions yet. Start the conversation!</p>
           </Card>
         ) : (
-          discussions.map((discussion) => (
-            <Card key={discussion.id} className="p-6 bg-card border-border hover:shadow-premium transition-shadow">
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0">
-                  {discussion.profiles.avatar_url ? (
-                    <img
-                      src={discussion.profiles.avatar_url}
-                      alt={discussion.profiles.username}
-                      className="h-10 w-10 rounded-full"
-                    />
-                  ) : (
-                    <div className="h-10 w-10 rounded-full bg-secondary flex items-center justify-center">
-                      <User className="h-5 w-5 text-muted-foreground" />
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-2">
-                    <h3 className="text-lg font-semibold text-foreground">{discussion.title}</h3>
-                    <span className="px-2 py-1 text-xs rounded-full bg-primary/10 text-primary">
-                      {discussion.category}
-                    </span>
+          filteredDiscussions.map((discussion) => (
+            <motion.div
+              key={discussion.id}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.2 }}
+            >
+              <Card className="p-6 bg-card border-border hover:shadow-premium transition-shadow">
+                <div className="flex gap-4">
+                  <div className="flex flex-col items-center gap-1">
+                    <button
+                      onClick={() => handleUpvote(discussion.id)}
+                      className={`p-2 rounded-lg transition-colors ${
+                        upvotedDiscussions.has(discussion.id)
+                          ? "bg-primary text-primary-foreground"
+                          : "bg-secondary hover:bg-secondary/80 text-muted-foreground"
+                      }`}
+                    >
+                      <ArrowUp className="h-4 w-4" />
+                    </button>
+                    <span className="text-sm font-medium">{discussion.upvotes || 0}</span>
                   </div>
-                  <p className="text-sm text-muted-foreground mb-2">by {discussion.profiles.username}</p>
-                  <p className="text-foreground mb-3">{discussion.content}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {new Date(discussion.created_at).toLocaleDateString()}
-                  </p>
 
-                  <Collapsible
-                    open={openDiscussions[discussion.id]}
-                    onOpenChange={(open) => setOpenDiscussions((prev) => ({ ...prev, [discussion.id]: open }))}
-                    className="mt-4"
-                  >
-                    <CollapsibleTrigger asChild>
-                      <Button variant="ghost" size="sm" className="gap-2">
-                        <MessageCircle className="h-4 w-4" />
-                        {replies[discussion.id]?.length || 0} Replies
-                      </Button>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="mt-4 space-y-4">
-                      {replies[discussion.id]?.map((reply) => (
-                        <div key={reply.id} className="flex gap-3 pl-4 border-l-2 border-primary/20">
-                          <div className="flex-shrink-0">
-                            {reply.profiles.avatar_url ? (
-                              <img
-                                src={reply.profiles.avatar_url}
-                                alt={reply.profiles.username}
-                                className="h-8 w-8 rounded-full"
-                              />
-                            ) : (
-                              <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center">
-                                <User className="h-4 w-4 text-muted-foreground" />
-                              </div>
-                            )}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-start gap-3 mb-2">
+                      <div className="flex-shrink-0">
+                        {discussion.profiles.avatar_url ? (
+                          <img
+                            src={discussion.profiles.avatar_url}
+                            alt={discussion.profiles.username}
+                            className="h-8 w-8 rounded-full"
+                          />
+                        ) : (
+                          <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center">
+                            <User className="h-4 w-4 text-muted-foreground" />
                           </div>
-                          <div className="flex-1">
-                            <p className="text-sm font-medium">{reply.profiles.username}</p>
-                            <p className="text-sm text-foreground mt-1">{reply.content}</p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              {new Date(reply.created_at).toLocaleDateString()}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                      
-                      <div className="flex gap-2 pl-4">
-                        <Input
-                          placeholder="Write a reply..."
-                          value={replyContent[discussion.id] || ""}
-                          onChange={(e) => setReplyContent((prev) => ({ ...prev, [discussion.id]: e.target.value }))}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
-                              e.preventDefault();
-                              handleReply(discussion.id);
-                            }
-                          }}
-                          className="bg-secondary border-border"
-                        />
-                        <Button
-                          size="icon"
-                          onClick={() => handleReply(discussion.id)}
-                          className="bg-primary hover:bg-primary/90"
-                        >
-                          <Send className="h-4 w-4" />
-                        </Button>
+                        )}
                       </div>
-                    </CollapsibleContent>
-                  </Collapsible>
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          {discussion.is_pinned && (
+                            <Pin className="h-4 w-4 text-primary" />
+                          )}
+                          <h3 className="text-lg font-semibold text-foreground">{discussion.title}</h3>
+                          <span className="px-2 py-1 text-xs rounded-full bg-primary/10 text-primary">
+                            {discussion.category}
+                          </span>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          by {discussion.profiles.username} • {new Date(discussion.created_at).toLocaleDateString()}
+                        </p>
+                      </div>
+                    </div>
+
+                    <p className="text-foreground mb-3">{discussion.content}</p>
+
+                    <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <Eye className="h-4 w-4" />
+                        {discussion.views_count || 0}
+                      </span>
+                      <Collapsible
+                        open={openDiscussions[discussion.id]}
+                        onOpenChange={(open) => setOpenDiscussions((prev) => ({ ...prev, [discussion.id]: open }))}
+                      >
+                        <CollapsibleTrigger asChild>
+                          <button className="flex items-center gap-1 hover:text-foreground transition-colors">
+                            <MessageCircle className="h-4 w-4" />
+                            {replies[discussion.id]?.length || 0} Replies
+                          </button>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="mt-4 space-y-4">
+                          {replies[discussion.id]?.map((reply) => (
+                            <div key={reply.id} className="flex gap-3 pl-4 border-l-2 border-primary/20">
+                              <div className="flex-shrink-0">
+                                {reply.profiles.avatar_url ? (
+                                  <img
+                                    src={reply.profiles.avatar_url}
+                                    alt={reply.profiles.username}
+                                    className="h-8 w-8 rounded-full"
+                                  />
+                                ) : (
+                                  <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center">
+                                    <User className="h-4 w-4 text-muted-foreground" />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex-1">
+                                <p className="text-sm font-medium">{reply.profiles.username}</p>
+                                <p className="text-sm text-foreground mt-1">{reply.content}</p>
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  {new Date(reply.created_at).toLocaleDateString()}
+                                </p>
+                              </div>
+                            </div>
+                          ))}
+
+                          <div className="flex gap-2 pl-4">
+                            <Input
+                              placeholder="Write a reply..."
+                              value={replyContent[discussion.id] || ""}
+                              onChange={(e) => setReplyContent((prev) => ({ ...prev, [discussion.id]: e.target.value }))}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  handleReply(discussion.id);
+                                }
+                              }}
+                              className="bg-secondary border-border"
+                            />
+                            <Button
+                              size="icon"
+                              onClick={() => handleReply(discussion.id)}
+                              className="bg-primary hover:bg-primary/90"
+                            >
+                              <Send className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </Card>
+              </Card>
+            </motion.div>
           ))
         )}
       </div>

@@ -10,7 +10,7 @@ interface LayoutProps {
   children: ReactNode;
 }
 
-export const Layout = ({ children }: LayoutProps) => {
+const Layout = ({ children }: LayoutProps) => {
   const navigate = useNavigate();
   const location = useLocation();
   const [session, setSession] = useState<Session | null>(null);
@@ -83,3 +83,5 @@ export const Layout = ({ children }: LayoutProps) => {
     </SidebarProvider>
   );
 };
+
+export default Layout;
