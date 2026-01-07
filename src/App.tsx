@@ -11,6 +11,7 @@ import Members from "./pages/Members";
 import Learn from "./pages/Learn";
 import Leaderboard from "./pages/Leaderboard";
 import Notifications from "./pages/Notifications";
+import Masterminds from "./pages/Masterminds";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,12 +31,12 @@ const App = () => (
           <Route path="/learn" element={<Learn />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/notifications" element={<Notifications />} />
+          <Route path="/masterminds" element={<Masterminds />} />
           {/* Placeholder routes - redirect to dashboard for now */}
           <Route path="/discussions" element={<Dashboard />} />
           <Route path="/achievements" element={<Dashboard />} />
           <Route path="/goals" element={<Dashboard />} />
           <Route path="/meetings" element={<Dashboard />} />
-          <Route path="/masterminds" element={<Dashboard />} />
           <Route path="/messages" element={<Dashboard />} />
           <Route path="/badges" element={<Dashboard />} />
           <Route path="/progress" element={<Dashboard />} />
